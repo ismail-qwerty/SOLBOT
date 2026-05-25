@@ -47,13 +47,17 @@ def dashboard():
 
 @app.route("/api/status")
 def api_status():
-    """Return all live dashboard data in one call."""
+    """Return comprehensive live dashboard telemetry data."""
     price   = _fetch_live_price()
     balance = _fetch_live_balance()
     stats   = get_stats()
     open_t  = get_open_trades()
     history = get_trade_history(100)
     cfg     = load_config()
+
+    # Dynamic calculation loop to generate true current wallet equity
+    active_margin_allocated = sum(float(t.get("position_size_usdt", 0)) for t in open_t)
+    total_equity = balance + active_margin_allocated
 
     # Enrich open trades with current P&L
     for t in open_t:
@@ -88,6 +92,7 @@ def api_status():
         "is_emergency":     get_state("is_emergency_stopped"),
         "sol_price":        price,
         "balance":          round(balance, 4),
+        "total_equity":     round(total_equity, 4),  # Clean structural trace added
         "today_pnl":        round(today_pnl, 4),
         "today_pnl_pct":    round((today_pnl / balance * 100) if balance else 0, 2),
         "daily_loss":       float(get_state("daily_loss_usdt") or "0"),

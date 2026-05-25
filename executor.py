@@ -99,7 +99,7 @@ def place_sl_order(
     side: str,
     contracts: float,
     sl_price: float,
-) -> dict:
+) -> dict | None:
     """
     Place a Stop-Loss trigger order with reduce_only=True.
     reduce_only ensures it can ONLY close an existing position.
@@ -107,20 +107,24 @@ def place_sl_order(
     exch       = _exchange()
     close_side = "sell" if side == "LONG" else "buy"
 
-    time.sleep(API_CALL_DELAY)
-    order = exch.create_order(
-        symbol=symbol,
-        type="stop_market",
-        side=close_side,
-        amount=contracts,
-        params={
-            "stopPrice":    sl_price,
-            "reduce_only":  True,
-            "positionSide": "LONG" if side == "LONG" else "SHORT",
-        },
-    )
-    logger.info(f"SL order placed: id={order['id']}  trigger=${sl_price:.4f}")
-    return order
+    try:
+        time.sleep(API_CALL_DELAY)
+        order = exch.create_order(
+            symbol=symbol,
+            type="stop_market",
+            side=close_side,
+            amount=round(contracts, 2),  # Precision fix applied
+            params={
+                "stopPrice":    round(sl_price, 4),
+                "reduce_only":  True,
+                "positionSide": "LONG" if side == "LONG" else "SHORT",
+            },
+        )
+        logger.info(f"SL order placed: id={order['id']}  trigger=${sl_price:.4f}")
+        return order
+    except Exception as e:
+        logger.error(f"Stop-Loss order registration aborted: {e}")
+        return None
 
 
 def place_tp_order(
@@ -128,7 +132,7 @@ def place_tp_order(
     side: str,
     contracts: float,
     tp_price: float,
-) -> dict:
+) -> dict | None:
     """
     Place a Take-Profit trigger order with reduce_only=True.
     reduce_only ensures it can ONLY close an existing position.
@@ -136,20 +140,24 @@ def place_tp_order(
     exch       = _exchange()
     close_side = "sell" if side == "LONG" else "buy"
 
-    time.sleep(API_CALL_DELAY)
-    order = exch.create_order(
-        symbol=symbol,
-        type="take_profit_market",
-        side=close_side,
-        amount=contracts,
-        params={
-            "stopPrice":    tp_price,
-            "reduce_only":  True,
-            "positionSide": "LONG" if side == "LONG" else "SHORT",
-        },
-    )
-    logger.info(f"TP order placed: id={order['id']}  trigger=${tp_price:.4f}")
-    return order
+    try:
+        time.sleep(API_CALL_DELAY)
+        order = exch.create_order(
+            symbol=symbol,
+            type="take_profit_market",
+            side=close_side,
+            amount=round(contracts, 2),  # Precision fix applied
+            params={
+                "stopPrice":    round(tp_price, 4),
+                "reduce_only":  True,
+                "positionSide": "LONG" if side == "LONG" else "SHORT",
+            },
+        )
+        logger.info(f"TP order placed: id={order['id']}  trigger=${tp_price:.4f}")
+        return order
+    except Exception as e:
+        logger.error(f"Take-Profit order registration aborted: {e}")
+        return None
 
 
 def cancel_order(symbol: str, order_id: str) -> None:

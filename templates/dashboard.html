@@ -624,7 +624,7 @@
           </div>
           <div class="field">
             <label>Position Size (%)</label>
-            <input type="number" id="sPositionPct" min="1" max="100" placeholder="50">
+            <input type="number" id="sPositionPct" min="1" max="100" step="1" placeholder="50">
           </div>
           <div class="field">
             <label>Max Daily Loss (%)</label>
@@ -750,8 +750,9 @@
     badge.className = 'status-badge ' + (running ? 'status-running' : 'status-stopped');
     dot.style.background = running ? 'var(--green)' : 'var(--red)';
 
-    // Stat cards
-    document.getElementById('balance').textContent   = '$' + fmt(data.balance, 4);
+    // Stat cards - Updated to map total_equity instead of raw balance
+    const displayEquity = data.total_equity !== undefined ? data.total_equity : (data.balance || 0);
+    document.getElementById('balance').textContent   = '$' + displayEquity.toFixed(4);
     const tpnl = data.today_pnl;
     document.getElementById('todayPnl').textContent  = (tpnl>=0?'+':'') + '$'+Math.abs(tpnl).toFixed(4);
     document.getElementById('todayPnl').className    = 'stat-value ' + (tpnl>=0?'pos':'neg');

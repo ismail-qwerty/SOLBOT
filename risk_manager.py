@@ -115,11 +115,17 @@ def is_paused() -> bool:
 
 def calculate_position_size(balance: float) -> float:
     """
-    50% of balance × 0.95 safety buffer to cover exchange fees.
-    Actual Trading Margin = (balance × 0.50) × 0.95
+    Ensures safe executable contract margin sizes for smaller wallets.
+    Leaves a 5% baseline calculation buffer for exchange taker fees.
     """
     cfg = load_config()
-    raw = balance * cfg["position_pct"]
+    position_percentage = cfg["position_pct"]
+    
+    # Force dynamic protection for thin capital frames
+    if balance <= 12.0:
+        position_percentage = 0.58  # Yields a reliable ~$5.50 entry margin base
+        
+    raw = balance * position_percentage
     safe = raw * 0.95
     return round(safe, 4)
 
