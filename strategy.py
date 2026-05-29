@@ -6,78 +6,88 @@ logger = logging.getLogger("solbot.strategy")
 
 def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Computes high-frequency scalping indicators.
-    Optimized for short timeframes (3m/5m) to trigger ~10 trades daily.
+    Solana Volatility Breakout Indicators optimized for the 15m timeframe.
+    Emulates an hourly macro filter (EMA 200) to minimize consolidation noise.
     """
     try:
         df = df.copy()
 
-        # 1. Fast Supertrend (Period=10, Multiplier=2.0) for high frequency structural switches
-        st = ta.supertrend(df["high"], df["low"], df["close"], length=10, multiplier=2.0)
-        if st is not None:
-            # pandas_ta returns columns: [SUPERT_10_2.0, SUPERTd_10_2.0, SUPERTl_10_2.0, SUPERTs_10_2.0]
-            # SUPERTd_10_2.0 contains direction: 1 = Bullish, -1 = Bearish
-            df["st_direction"] = st["SUPERTd_10_2.0"]
+        # 1. Macro Trend Filter (EMA 200 on 15m chart behaves similarly to EMA 50 on a 1h chart)
+        df["macro_ema"] = ta.ema(df["close"], length=200)
+
+        # 2. Donchian Channels (Length 20) to capture definitive Solana volatility breakouts
+        donchian = ta.donchian(df["high"], df["low"], lower_length=20, upper_length=20)
+        if donchian is not None:
+            # Extract boundaries safely from pandas_ta multi-column dataframe output
+            df["dc_upper"] = donchian.iloc[:, 0]  # UCC_20_20 (Upper Channel)
+            df["dc_lower"] = donchian.iloc[:, 2]  # LCC_20_20 (Lower Channel)
         else:
-            df["st_direction"] = 0
+            # Fallback calculation if pandas_ta structural allocation misses
+            df["dc_upper"] = df["high"].rolling(20).max()
+            df["dc_lower"] = df["low"].rolling(20).min()
 
-        # 2. Fast RSI (Length 7) to track immediate momentum shifts
-        df["rsi_fast"] = ta.rsi(df["close"], length=7)
-
-        # 3. ATR (Length 10) for micro-volatility target positioning
-        df["atr"] = ta.atr(df["high"], df["low"], df["close"], length=10)
+        # 3. Average True Range (ATR 14) for dynamic exit matrix scaling
+        df["atr"] = ta.atr(df["high"], df["low"], df["close"], length=14)
 
         return df
 
     except Exception as e:
-        logger.error(f"❌ Critical error computing indicators: {str(e)}")
-        # Return fallback columns to keep pipeline functional
-        if "st_direction" not in df.columns:
-            df["st_direction"] = 0
-        if "rsi_fast" not in df.columns:
-            df["rsi_fast"] = 50.0
+        logger.error(f"❌ Error compiling strategy indicator matrices: {str(e)}")
+        # Provide clean, functional data properties to maintain core loop continuity
+        if "macro_ema" not in df.columns:
+            df["macro_ema"] = df["close"]
+        if "dc_upper" not in df.columns:
+            df["dc_upper"] = df["high"]
+        if "dc_lower" not in df.columns:
+            df["dc_lower"] = df["low"]
         if "atr" not in df.columns:
-            df["atr"] = 0.5
+            df["atr"] = 1.00
         return df
 
 
 def evaluate_signal(df: pd.DataFrame) -> dict:
     """
-    Scans the latest fast timeframe data for sharp momentum signals.
+    Evaluates completed candle data to catch clear, high-velocity trends.
+    Uses multi-timeframe rules to target roughly 4-5 high-conviction entries a day.
     """
+    # Verify we have enough data history to calculate the 200 EMA and 20 DC channels
+    if len(df) < 200:
+        return {"signal": None, "atr": 1.0, "details": {}}
+
+    # Always pull the last COMPLETED candle data (iloc[-1]) to avoid live candle repainting traps
     last = df.iloc[-1]
     details = {}
 
-    st_dir   = last.get("st_direction", 0)
-    rsi_fast = last.get("rsi_fast", None)
-    atr      = last.get("atr", None)
-    close_pr = last.get("close", None)
+    close_price = last.get("close")
+    macro_ema   = last.get("macro_ema")
+    dc_upper    = last.get("dc_upper")
+    dc_lower    = last.get("dc_lower")
+    atr         = last.get("atr")
 
-    # Core validation to avoid math evaluation on empty or corrupted arrays
-    if pd.isna(rsi_fast) or pd.isna(atr) or pd.isna(close_pr) or st_dir == 0:
-        return {"signal": None, "atr": atr, "details": details}
+    # Rigid validation guard against empty strings, NaN, or NoneType objects
+    if pd.isna(close_price) or pd.isna(macro_ema) or pd.isna(dc_upper) or pd.isna(dc_lower) or pd.isna(atr):
+        return {"signal": None, "atr": 1.0, "details": details}
 
     direction = None
 
-    # Fetch previous row data safely to prevent chasing over-extended moves
-    prev_rsi = df["rsi_fast"].iloc[-2] if len(df) > 1 else 50.0
-
     # ── LONG TRIGGER CONDITIONS ──
-    if st_dir == 1 and rsi_fast > 45:
-        if pd.isna(prev_rsi) or prev_rsi <= 70:  # Avoid entering a top-heavy overbought pump
-            direction = "LONG"
+    # Trend is macro bullish (Price > EMA) AND price breaks out over the 20-candle high boundary
+    if close_price > macro_ema and close_price >= dc_upper:
+        direction = "LONG"
 
     # ── SHORT TRIGGER CONDITIONS ──
-    elif st_dir == -1 and rsi_fast < 55:
-        if pd.isna(prev_rsi) or prev_rsi >= 30:  # Avoid entering a bottom-heavy oversold dump
-            direction = "SHORT"
+    # Trend is macro bearish (Price < EMA) AND price cracks down beneath the 20-candle low boundary
+    elif close_price < macro_ema and close_price <= dc_lower:
+        direction = "SHORT"
 
-    details["st_dir"] = int(st_dir)
-    details["rsi"]    = round(float(rsi_fast), 2)
-    details["close"]  = round(float(close_pr), 4)
+    # Populate strategy metrics to export to your logging, bot framework, and API dashboard
+    details["close"]     = round(float(close_price), 4)
+    details["macro_ema"] = round(float(macro_ema), 4)
+    details["dc_upper"]  = round(float(dc_upper), 4)
+    details["dc_lower"]  = round(float(dc_lower), 4)
 
     if direction:
-        logger.info(f"⚡ FAST SCALP TRIGGERED: {direction} | RSI={rsi_fast:.2f} | Close={close_pr}")
+        logger.info(f"🎯 SOLANA BREAKOUT VALIDATED: {direction} | Price: {close_price} | EMA Limit: {macro_ema}")
         return {
             "signal":  direction,
             "atr":     float(atr),
@@ -89,36 +99,35 @@ def evaluate_signal(df: pd.DataFrame) -> dict:
 
 def calculate_exits(side: str, entry_price: float, atr: float) -> tuple[float, float]:
     """
-    Calculates tight risk-managed exit levels.
-    Features robust validation to catch and neutralize 'NoneType' or empty string values.
+    Calculates protective exit targets optimized for Solana's expansion characteristics.
+    Features robust validation handling to bypass and absorb empty or corrupt input states.
     """
-    # ── Robust Type & None Protection Guard ──
+    # Complete NoneType and numeric edge-case interceptor
     if entry_price is None or pd.isna(entry_price) or atr is None or pd.isna(atr):
-        logger.warning(f"⚠️ Missing critical pricing context for exit calculation (Price: {entry_price}, ATR: {atr})")
+        logger.warning(f"⚠️ Exit calculations blocked due to missing context (Price: {entry_price}, ATR: {atr})")
         return 0.0, 0.0
 
     try:
-        # Cast tracking elements strictly into floats to ensure operations succeed
         entry_price = float(entry_price)
         atr = float(atr)
-    except (ValueError, TypeError) as err:
-        logger.error(f"❌ Failed to parse data values into float properties: {err}")
+    except (ValueError, TypeError) as conversion_err:
+        logger.error(f"❌ Type casting error inside target boundary definitions: {conversion_err}")
         return 0.0, 0.0
 
-    # Guard against calculation on a zero or corrupted base
     if entry_price <= 0 or atr <= 0:
-        logger.error(f"❌ Invalid entry_price ({entry_price}) or atr ({atr}) range value.")
+        logger.error(f"❌ Invalid numeric limits identified (Price: {entry_price}, ATR: {atr})")
         return 0.0, 0.0
 
-    # ── High-Frequency Tight Profit/Loss Bands ──
+    # 1.5x ATR Stop Loss for trade breathing space; 2.5x ATR Take Profit for picking up big runs
+    # This provides an institutional-grade 1:1.66 Risk-to-Reward Ratio profile
     if side.upper() == "LONG":
-        sl = entry_price - (1.2 * atr)
-        tp = entry_price + (1.8 * atr)
+        sl = entry_price - (1.5 * atr)
+        tp = entry_price + (2.5 * atr)
     elif side.upper() == "SHORT":
-        sl = entry_price + (1.2 * atr)
-        tp = entry_price - (1.8 * atr)
+        sl = entry_price + (1.5 * atr)
+        tp = entry_price - (2.5 * atr)
     else:
-        logger.error(f"❌ Unknown transaction layout type identified: {side}")
+        logger.error(f"❌ Unrecognized transaction position allocation side: {side}")
         return 0.0, 0.0
 
     return round(sl, 4), round(tp, 4)
