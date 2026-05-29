@@ -55,11 +55,11 @@ def place_entry_order(
     symbol: str,
     side: str,       # 'LONG' | 'SHORT'
     margin_usdt: float,
-) -> dict:
+) -> dict | None:
     """
     Place a market entry order.
     margin_usdt is the ACTUAL margin to commit (already includes 0.95 buffer).
-    Returns the full CCXT order dict.
+    Returns the full CCXT order dict or None on failure.
     """
     cfg      = load_config()
     leverage = cfg["leverage"]
@@ -67,31 +67,42 @@ def place_entry_order(
 
     order_side = "buy" if side == "LONG" else "sell"
 
-    # Calculate notional contracts from margin
-    price     = fetch_ticker_price(symbol)
-    notional  = margin_usdt * leverage          # USD value of position
-    contracts = notional / price                # number of SOL contracts
+    try:
+        # Calculate notional contracts from margin
+        price     = fetch_ticker_price(symbol)
+        notional  = margin_usdt * leverage          # USD value of position
+        contracts = notional / price                # number of SOL contracts
 
-    # Round down to exchange precision
-    markets  = exch.load_markets()
-    precision = markets[symbol].get("precision", {}).get("amount", 0.01)
-    contracts = float(exch.amount_to_precision(symbol, contracts))
+        # Round down to exchange precision
+        markets  = exch.load_markets()
+        precision = markets[symbol].get("precision", {}).get("amount", 0.01)
+        contracts = float(exch.amount_to_precision(symbol, contracts))
 
-    logger.info(
-        f"ENTRY {side}: {contracts} contracts @ ~${price:.4f}"
-        f"  margin=${margin_usdt:.4f}  notional=${notional:.2f}"
-    )
+        logger.info(
+            f"📤 ENTRY {side}: {contracts} contracts @ ~${price:.4f} | "
+            f"margin=${margin_usdt:.4f} | notional=${notional:.2f}"
+        )
 
-    time.sleep(API_CALL_DELAY)
-    order = exch.create_order(
-        symbol=symbol,
-        type="market",
-        side=order_side,
-        amount=contracts,
-        params={"positionSide": "LONG" if side == "LONG" else "SHORT"},
-    )
-    logger.info(f"Entry order placed: id={order['id']}")
-    return order
+        time.sleep(API_CALL_DELAY)
+        order = exch.create_order(
+            symbol=symbol,
+            type="market",
+            side=order_side,
+            amount=contracts,
+            params={"positionSide": "LONG" if side == "LONG" else "SHORT"},
+        )
+        logger.info(f"✅ Entry order placed successfully: id={order['id']}")
+        return order
+        
+    except ccxt.InsufficientFunds as e:
+        logger.error(f"❌ Entry order failed: Insufficient funds - {e}")
+        return None
+    except ccxt.InvalidOrder as e:
+        logger.error(f"❌ Entry order failed: Invalid order parameters - {e}")
+        return None
+    except Exception as e:
+        logger.error(f"❌ Entry order failed: {e}")
+        return None
 
 
 def place_sl_order(

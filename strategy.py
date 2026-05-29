@@ -38,7 +38,8 @@ def evaluate_signal(df: pd.DataFrame) -> dict:
     atr      = last["atr"]
 
     if pd.isna(rsi_fast) or pd.isna(atr) or st_dir == 0:
-        return {"signal": None, "atr": atr, "details": details}
+        logger.debug("Indicators not ready or invalid")
+        return {"signal": None, "atr": atr if not pd.isna(atr) else 0, "details": details}
 
     direction = None
 
@@ -46,17 +47,25 @@ def evaluate_signal(df: pd.DataFrame) -> dict:
     if st_dir == 1 and rsi_fast > 45:
         if df["rsi_fast"].iloc[-2] <= 70: # Ensure we aren't chasing an exhausted pump
             direction = "LONG"
+            logger.info(f"✅ LONG conditions met: Supertrend=BULLISH | RSI={rsi_fast:.1f} > 45")
+        else:
+            logger.debug(f"⚠️ LONG blocked: RSI exhaustion (prev RSI > 70)")
 
     # ── SHORT TRIGGER ──
     elif st_dir == -1 and rsi_fast < 55:
         if df["rsi_fast"].iloc[-2] >= 30: # Ensure we aren't chasing an exhausted dump
             direction = "SHORT"
+            logger.info(f"✅ SHORT conditions met: Supertrend=BEARISH | RSI={rsi_fast:.1f} < 55")
+        else:
+            logger.debug(f"⚠️ SHORT blocked: RSI exhaustion (prev RSI < 30)")
+    else:
+        logger.debug(f"❌ No signal: ST_dir={st_dir} | RSI={rsi_fast:.1f}")
 
     details["st_dir"] = int(st_dir)
     details["rsi"]    = round(float(rsi_fast), 2)
 
     if direction:
-        logger.info(f"⚡ SCALP TRIGGERED: {direction} | RSI={rsi_fast:.1f}")
+        logger.info(f"⚡ SCALP SIGNAL TRIGGERED: {direction} | RSI={rsi_fast:.1f} | ATR={atr:.4f}")
         return {
             "signal":  direction,
             "atr":     float(atr),

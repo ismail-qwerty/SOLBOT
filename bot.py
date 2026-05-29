@@ -111,65 +111,97 @@ def check_closed_trades() -> None:
             )
 
 
-def execute_trade(signal: str, atr: float) -> None:
+def execute_trade(signal: str, atr: float) -> bool:
     """
     Full trade execution pipeline:
     1. Size position  2. Entry order  3. SL/TP orders  4. Log to DB
+    Returns True if trade executed successfully, False otherwise.
     """
     cfg    = load_config()
     symbol = cfg["symbol"]
 
-    balance  = fetch_balance()
-    margin   = calculate_position_size(balance)
+    try:
+        balance  = fetch_balance()
+        margin   = calculate_position_size(balance)
 
-    if margin < 1.0:
-        logger.warning(f"Margin too small to trade: ${margin:.4f}")
-        return
+        if margin < 1.0:
+            logger.error(f"❌ TRADE REJECTED: Margin too small (${margin:.4f} < $1.00)")
+            return False
 
-    set_leverage(symbol)
+        logger.info(f"💰 Balance: ${balance:.2f} | Margin allocated: ${margin:.2f}")
+        
+        set_leverage(symbol)
 
-    # ── Entry ─────────────────────────────────────
-    entry_order = place_entry_order(symbol, signal, margin)
-    entry_price = float(entry_order.get("average") or entry_order.get("price") or
-                        fetch_ticker_price(symbol))
-    contracts   = float(entry_order.get("filled") or entry_order.get("amount"))
+        # ── Entry ─────────────────────────────────────
+        logger.info(f"📤 Placing {signal} entry order...")
+        entry_order = place_entry_order(symbol, signal, margin)
+        
+        if not entry_order:
+            logger.error(f"❌ TRADE FAILED: Entry order returned None")
+            return False
+            
+        entry_price = float(entry_order.get("average") or entry_order.get("price") or
+                            fetch_ticker_price(symbol))
+        contracts   = float(entry_order.get("filled") or entry_order.get("amount"))
 
-    # Validate entry execution
-    if not entry_order or contracts <= 0:
-        logger.error("Entry order failed or returned zero contracts. Aborting trade.")
-        return
+        # Validate entry execution
+        if contracts <= 0:
+            logger.error(f"❌ TRADE FAILED: Entry order returned zero contracts")
+            return False
 
-    # ── Exits ─────────────────────────────────────
-    sl_price, tp_price = calculate_exits(signal, entry_price, atr)
+        logger.info(f"✅ Entry filled: {contracts} contracts @ ${entry_price:.4f}")
 
-    # Allow order book synchronization
-    time.sleep(0.5)
+        # ── Exits ─────────────────────────────────────
+        sl_price, tp_price = calculate_exits(signal, entry_price, atr)
+        logger.info(f"🎯 Setting exits: SL=${sl_price:.4f} | TP=${tp_price:.4f}")
 
-    sl_order = place_sl_order(symbol, signal, contracts, sl_price)
-    tp_order = place_tp_order(symbol, signal, contracts, tp_price)
+        # Allow order book synchronization
+        time.sleep(0.5)
 
-    # ── Log to database ───────────────────────────
-    sl_order_id = str(sl_order.get("id", "")) if sl_order else ""
-    tp_order_id = str(tp_order.get("id", "")) if tp_order else ""
-    
-    trade_id = open_trade(
-        side               = signal,
-        entry_price        = entry_price,
-        sl_price           = sl_price,
-        tp_price           = tp_price,
-        atr                = atr,
-        position_size_usdt = margin,
-        leverage           = cfg["leverage"],
-        entry_order_id     = str(entry_order.get("id", "")),
-        sl_order_id        = sl_order_id,
-        tp_order_id        = tp_order_id,
-    )
+        sl_order = place_sl_order(symbol, signal, contracts, sl_price)
+        if not sl_order:
+            logger.warning(f"⚠️ WARNING: Stop-Loss order failed to place")
+            
+        tp_order = place_tp_order(symbol, signal, contracts, tp_price)
+        if not tp_order:
+            logger.warning(f"⚠️ WARNING: Take-Profit order failed to place")
 
-    update_peak_balance(balance)
-    logger.info(
-        f"✅ Trade #{trade_id} OPENED | {signal} | entry=${entry_price:.4f} "
-        f"SL=${sl_price:.4f} TP=${tp_price:.4f} ATR={atr:.4f}"
-    )
+        # ── Log to database ───────────────────────────
+        sl_order_id = str(sl_order.get("id", "")) if sl_order else ""
+        tp_order_id = str(tp_order.get("id", "")) if tp_order else ""
+        
+        trade_id = open_trade(
+            side               = signal,
+            entry_price        = entry_price,
+            sl_price           = sl_price,
+            tp_price           = tp_price,
+            atr                = atr,
+            position_size_usdt = margin,
+            leverage           = cfg["leverage"],
+            entry_order_id     = str(entry_order.get("id", "")),
+            sl_order_id        = sl_order_id,
+            tp_order_id        = tp_order_id,
+        )
+
+        update_peak_balance(balance)
+        logger.info(
+            f"✅ TRADE #{trade_id} OPENED SUCCESSFULLY | {signal} | "
+            f"Entry=${entry_price:.4f} | SL=${sl_price:.4f} | TP=${tp_price:.4f} | ATR={atr:.4f}"
+        )
+        return True
+        
+    except ccxt.InsufficientFunds as e:
+        logger.error(f"❌ TRADE FAILED: Insufficient funds - {e}")
+        return False
+    except ccxt.InvalidOrder as e:
+        logger.error(f"❌ TRADE FAILED: Invalid order - {e}")
+        return False
+    except ccxt.ExchangeError as e:
+        logger.error(f"❌ TRADE FAILED: Exchange error - {e}")
+        return False
+    except Exception as e:
+        logger.error(f"❌ TRADE FAILED: Unexpected error - {e}")
+        return False
 
 
 def run_bot() -> None:
@@ -191,7 +223,7 @@ def run_bot() -> None:
             # ── 2. Enforce max open trades ─────────────
             open_trades = get_open_trades()
             if len(open_trades) >= MAX_OPEN_TRADES:
-                logger.debug(f"Max open trades ({MAX_OPEN_TRADES}) reached — waiting")
+                logger.debug(f"⏸️ Max open trades ({MAX_OPEN_TRADES}) reached — waiting for exits")
                 time.sleep(CANDLE_WAIT_SECONDS)
                 continue
 
@@ -212,7 +244,7 @@ def run_bot() -> None:
             balance = fetch_balance()
             allowed, reason = can_trade(balance)
             if not allowed:
-                logger.info(f"Trade blocked: {reason}")
+                logger.warning(f"🚫 TRADE BLOCKED: {reason}")
                 time.sleep(CANDLE_WAIT_SECONDS)
                 continue
 
@@ -221,20 +253,27 @@ def run_bot() -> None:
             sig = evaluate_signal(df)
 
             if sig["signal"] is None:
+                logger.debug(f"📊 No signal detected | ST_dir={sig['details'].get('st_dir', 'N/A')} | RSI={sig['details'].get('rsi', 'N/A')}")
                 time.sleep(CANDLE_WAIT_SECONDS)
                 continue
 
             # ── 6. Execute trade ───────────────────────
-            execute_trade(sig["signal"], sig["atr"])
+            logger.info(f"🎯 SIGNAL DETECTED: {sig['signal']} | ATR={sig['atr']:.4f}")
+            success = execute_trade(sig["signal"], sig["atr"])
+            
+            if success:
+                logger.info(f"✅ Trade execution completed successfully")
+            else:
+                logger.error(f"❌ Trade execution failed - check logs above for details")
 
         except ccxt.NetworkError as e:
-            logger.warning(f"Network error: {e}  — retrying in 30s")
+            logger.error(f"🌐 Network error: {e} — retrying in 30s")
             time.sleep(30)
         except ccxt.ExchangeError as e:
-            logger.error(f"Exchange error: {e}  — retrying in 60s")
+            logger.error(f"🔴 Exchange error: {e} — retrying in 60s")
             time.sleep(60)
         except Exception as e:
-            logger.exception(f"Unexpected error: {e}")
+            logger.exception(f"💥 Unexpected error: {e}")
             time.sleep(30)
 
         time.sleep(CANDLE_WAIT_SECONDS)
