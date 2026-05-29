@@ -15,7 +15,7 @@ DEFAULTS = {
     "max_daily_loss_pct": 0.05,
     "max_drawdown_pct": 0.15,
     "symbol":           "SOL/USDT:USDT",
-    "timeframe":        "15m",
+    "timeframe":        "3m",
     "candle_limit":     250,
 }
 

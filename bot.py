@@ -38,7 +38,7 @@ logger = logging.getLogger("solbot.main")
 
 # ── Constants ──────────────────────────────────
 CANDLE_WAIT_SECONDS = 15          # polling interval (seconds)
-MAX_OPEN_TRADES     = 2
+MAX_OPEN_TRADES     = 4
 
 
 def fetch_candles(symbol: str, timeframe: str, limit: int) -> pd.DataFrame:
